@@ -36,8 +36,27 @@
     await wait();
   }
 
-  function isARNm(text) {
-    return /1.+injection.+(?:Pfizer|Moderna)/.test(text);
+  // Parfois on doit envoyer un vrai click avec tous les événements.
+  function fireFullClick(target) {
+    ["mousedown", "mouseup", "click"].forEach(type => {
+      const evt = new MouseEvent(type, { bubbles: true, cancelable: true });
+      target.dispatchEvent(evt);
+    });
+  }
+
+  function isARNmMotive(text) {
+    // Matches "Vaccin Pfizer" but not "2de dose Pfizer suite à 1e dose AstraZeneca"
+    return (text.includes("Pfizer") || text.includes("Moderna")) && !text.startsWith("2");
+  }
+
+  function isGeneralPopulationMotive(text) {
+    // Matches "Patients de 18 à 50 ans" but not "Patients de plus de 50 ans"
+    // Matches "Je suis un particulier"
+    // Doesn't match "plus de 18 ans avec comorbidité"
+    // Matches "Patients éligibles" (Centre Air France)
+    // Matches "Patients de moins 50 ans" et "Patients de moins de 50 ans"
+    // Matches "Grand public"
+    return /(?:18 à|particulier|éligibles|moins (?:de )?50|public)/i.test(text) && !text.includes("comorb");
   }
 
   function getAvailableSlot() {
@@ -66,7 +85,25 @@
     await wait();
 
     try {
-      // Catégorie de motif (optionel)
+      // Possible step 1: question sur consultation antérieure
+      const $questionPreviousPatient = document.querySelector(".dl-new-patient-option");
+      if ($questionPreviousPatient) {
+        // "Avez-vous déjà consulté un praticien de cet établissement ?"
+        // -> Non
+
+        let optionFound = false;
+        for (const $button of document.querySelectorAll(".dl-new-patient-option")) {
+          if ($button.textContent.includes("Non")) {
+            fireFullClick($button);
+            optionFound = true;
+            break;
+          }
+        }
+        if (!optionFound) throw new Error("N'a pas pu répondre 'Non' à la question de nouveau patient");
+        await wait();
+      }
+
+      // Possible step 2: Catégorie de motif (optionel)
       const $bookingCategoryMotive = document.getElementById(
         "booking_motive_category"
       );
@@ -77,34 +114,30 @@
           "option"
         )) {
           options.push($option.textContent);
-          if (
-            !/Patients de 18 à 50 ans|Je suis un particulier/.test(
-              $option.textContent
-            )
-          )
-            continue;
-
+          if (!isARNmMotive($option.textContent) && !isGeneralPopulationMotive($option.textContent)) continue
           selectOption($bookingCategoryMotive, $option);
           optionFound = true;
           break;
         }
 
-        if (!optionFound)
+        if (!optionFound) {
           throw new Error(
-            `Catégorie de motif non trouvé. Motif disponibles : ${options.join(
+            `Catégorie de motif non trouvé. Motifs disponibles : ${options.join(
               ", "
             )}`
           );
+        }
       }
 
-      // Motif de consultation
+
+      // Possible step 3: Motive de consultation
       const $bookingMotive = document.getElementById("booking_motive");
       if ($bookingMotive) {
         let optionFound = false;
         for (const $option of $bookingMotive.querySelectorAll("option")) {
           // On ne s'occupe que de Pfizer et Moderna.
           // Pour le reste pas besoin de l'extension, de nombreux RDV sont disponibles.
-          if (!isARNm($option.textContent)) continue;
+          if (!isARNmMotive($option.textContent)) continue;
 
           selectOption($bookingMotive, $option);
           optionFound = true;
@@ -114,11 +147,12 @@
           if (slot !== null) break;
         }
 
-        if (!optionFound) throw new Error("Injection ARNm non disponible");
+        if (!optionFound) throw new Error("Injection ARNm non disponible 1");
       } else {
+        // On a peut-être directement la boite "pas de créneaux possibles"
         // Cas où il n'y a qu'un choix
-        if (!isARNm(document.getElementById("booking-content").textContent))
-          throw new Error("Injection ARNm non disponible");
+        if (!isARNmMotive(document.getElementById("booking-content").textContent))
+          throw new Error("Injection ARNm non disponible 2");
         slot = getAvailableSlot();
       }
 
